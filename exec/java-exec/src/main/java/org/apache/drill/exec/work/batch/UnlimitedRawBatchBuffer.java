@@ -32,12 +32,22 @@ public class UnlimitedRawBatchBuffer extends BaseRawBatchBuffer<RawFragmentBatch
   private final int softlimit;
   private final int startlimit;
 
+  private int runtimeSoftLimit = -1;
+  private int runtimeAckCredit = 10;
+  private int sampleTimes = 0;
+  private long totalBatchSize = 0l;
+  private final int fragmentCount;
+  private final int maxSampleTimes;
+
   public UnlimitedRawBatchBuffer(FragmentContext context, int fragmentCount) {
     super(context, fragmentCount);
     this.softlimit = bufferSizePerSocket * fragmentCount;
     this.startlimit = Math.max(softlimit/2, 1);
     logger.trace("softLimit: {}, startLimit: {}", softlimit, startlimit);
     this.bufferQueue = new UnlimitedBufferQueue();
+    this.fragmentCount = fragmentCount;
+    this.sampleTimes = fragmentCount;
+    this.maxSampleTimes = fragmentCount;
   }
 
   private class UnlimitedBufferQueue implements BufferQueue<RawFragmentBatch> {
@@ -90,14 +100,39 @@ public class UnlimitedRawBatchBuffer extends BaseRawBatchBuffer<RawFragmentBatch
 
     @Override
     public void add(RawFragmentBatch batch) {
+      int recordCount = batch.getHeader().getDef().getRecordCount();
+      long bathByteSize = batch.getByteCount();
+      if (recordCount != 0) {
+        //skip first header batch
+        totalBatchSize += bathByteSize;
+        sampleTimes++;
+      }
+      if (sampleTimes == maxSampleTimes) {
+        long averageBathSize = totalBatchSize / sampleTimes;
+        //make a decision
+        long limit = context.getAllocator().getLimit();
+        long thresholdNetworkMem = (long) (limit * 0.40);
+        if (averageBathSize > 0) {
+          runtimeSoftLimit = (int) (thresholdNetworkMem / averageBathSize);
+          runtimeAckCredit = runtimeSoftLimit / fragmentCount;
+          runtimeAckCredit = runtimeAckCredit > 0 ? runtimeAckCredit : 1;
+        }
+      }
+      if (runtimeSoftLimit > 0) {
+        //we already make a decision to give a suggest runtime sender credit
+        if (bufferQueue.size() < runtimeSoftLimit) {
+          //we just send the same suggest credit to the sender
+          batch.sendOk(runtimeAckCredit);
+        }
+      } else if (bufferQueue.size() < softlimit) {
+        //still use the initial static sender credit
+        batch.sendOk();
+      }
       buffer.add(batch);
     }
   }
 
   protected void enqueueInner(final RawFragmentBatch batch) throws IOException {
-    if (bufferQueue.size() < softlimit) {
-      batch.sendOk();
-    }
     bufferQueue.add(batch);
   }
 

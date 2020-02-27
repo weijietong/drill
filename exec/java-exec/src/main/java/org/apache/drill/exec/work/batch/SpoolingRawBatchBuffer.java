@@ -59,6 +59,7 @@ public class SpoolingRawBatchBuffer extends BaseRawBatchBuffer<SpoolingRawBatchB
   private static final float STOP_SPOOLING_FRACTION = (float) 0.5;
   public static final long ALLOCATOR_INITIAL_RESERVATION = 1*1024*1024;
   public static final long ALLOCATOR_MAX_RESERVATION = 20L*1000*1000*1000;
+  private static final int SPOOLING_SENDER_CREDIT = 20;
 
   private enum SpoolingState {
     NOT_SPOOLING,
@@ -350,7 +351,8 @@ public class SpoolingRawBatchBuffer extends BaseRawBatchBuffer<SpoolingRawBatchB
       this.available = available;
       this.latch = new CountDownLatch(available ? 0 : 1);
       if (available) {
-        batch.sendOk();
+        //As we can flush to disc ,we could let the sender to send the batch more rapidly
+        batch.sendOk(SPOOLING_SENDER_CREDIT);
       }
     }
 
